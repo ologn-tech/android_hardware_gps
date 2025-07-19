@@ -15,4 +15,5 @@ cc_library_shared {
         "libcutils",
         "liblog",
     ],
+    cflags: ["-Wno-unused-parameter"],
 }

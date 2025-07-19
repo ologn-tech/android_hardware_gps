@@ -274,8 +274,6 @@ nmea_reader_init( NmeaReader*  r )
 static int
 nmea_reader_update_time( NmeaReader*  r, Token  tok, time_t *gmt )
 {
-    int        hour, minute;
-    double     seconds;
     struct tm  tm;
 
     if (tok.p + 6 > tok.end)
@@ -315,7 +313,7 @@ nmea_reader_update_date( NmeaReader*  r, Token  date_tok, Token  time_tok )
     int    day, mon, year;
 
     if (tok.p + 6 != tok.end) {
-        D("Date not properly formatted: '%.*s'", tok.end-tok.p, tok.p);
+        D("Date not properly formatted: '%.*s'", (int)(tok.end-tok.p), tok.p);
         return -1;
     }
     day  = str2int(tok.p, tok.p+2);
@@ -323,7 +321,7 @@ nmea_reader_update_date( NmeaReader*  r, Token  date_tok, Token  time_tok )
     year = str2int(tok.p+4, tok.p+6) + 2000;
 
     if ((day|mon|year) < 0) {
-        D("Date not properly formatted: '%.*s'", tok.end-tok.p, tok.p);
+        D("Date not properly formatted: '%.*s'", (int)(tok.end-tok.p), tok.p);
         return -1;
     }
 
@@ -372,7 +370,7 @@ nmea_reader_update_latlong( NmeaReader*  r,
 
     tok = latitude;
     if (tok.p + 6 > tok.end) {
-        D("Latitude is too short: '%.*s'", tok.end-tok.p, tok.p);
+        D("Latitude is too short: '%.*s'", (int)(tok.end-tok.p), tok.p);
         return -1;
     }
     lat = convert_from_hhmm(tok);
@@ -381,7 +379,7 @@ nmea_reader_update_latlong( NmeaReader*  r,
 
     tok = longitude;
     if (tok.p + 6 > tok.end) {
-        D("Longitude is too short: '%.*s'", tok.end-tok.p, tok.p);
+        D("Longitude is too short: '%.*s'", (int)(tok.end-tok.p), tok.p);
         return -1;
     }
     lon = convert_from_hhmm(tok);
@@ -414,7 +412,6 @@ nmea_reader_update_altitude( NmeaReader*  r,
 
 static int nmea_reader_update_accuracy(NmeaReader* r, Token accuracy, bool is_fix)
 {
-    //double  acc;
     Token   tok = accuracy;
 
     if (tok.p >= tok.end)
@@ -466,7 +463,6 @@ static int
 nmea_reader_update_svs( NmeaReader*  r, int inview, int num, int i, Token prn, Token elevation, Token azimuth, Token snr )
 {
     int o;
-    int prnid;
     i = (num - 1)*4 + i;
     if (i < inview) {
         r->sv_status.sv_list[i].prn=str2int(prn.p,prn.end);
@@ -513,14 +509,14 @@ nmea_reader_parse( NmeaReader*  r )
         D("Found %d tokens", tzer->count);
         for (n = 0; n < tzer->count; n++) {
             Token  tok = nmea_tokenizer_get(tzer,n);
-            D("%2d: '%.*s'", n, tok.end-tok.p, tok.p);
+            D("%2d: '%.*s'", n, (int)(tok.end-tok.p), tok.p);
         }
     }
 #endif
 
     tok = nmea_tokenizer_get(tzer, 0);
     if (tok.p + 5 > tok.end) {
-        D("Sentence id '%.*s' too short, ignored.", tok.end-tok.p, tok.p);
+        D("Sentence id '%.*s' too short, ignored.", (int)(tok.end-tok.p), tok.p);
         return;
     }
 
@@ -681,7 +677,7 @@ nmea_reader_parse( NmeaReader*  r )
         }
     } else {
         tok.p -= 2;
-        D("Unknown sentence '%.*s", tok.end-tok.p, tok.p);
+        D("Unknown sentence '%.*s", (int)(tok.end-tok.p), tok.p);
     }
 
 #if GPS_DEBUG
@@ -934,10 +930,6 @@ gps_state_init( GpsState*  state, GpsCallbacks* callbacks )
 {
     char   prop[PROPERTY_VALUE_MAX];
     char   device[256];
-    int    ret;
-    int    done = 0;
-
-    struct sigevent tmr_event;
 
     state->init       = 1;
     state->control[0] = -1;
