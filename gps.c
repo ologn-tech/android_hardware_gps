@@ -50,7 +50,8 @@ typedef struct {
 } GpsState;
 
 static GpsState       _gps_state[1];
-static int            id_in_fixed[12];
+static int            id_in_gp_fixed[12];
+static int            id_in_gl_fixed[12];
 static unsigned short period_in_ms;
 static long           time_sync;
 
@@ -211,12 +212,14 @@ typedef struct {
     int     utc_year;
     int     utc_mon;
     int     utc_day;
-    //time_t  utc_diff;
-    bool    gsa; // TRUE if GSA sentence was detected
+    int     utc_diff;
     GpsLocation  fix;
-    GpsSvStatus sv_status;
+    GnssSvStatus sv_gl_status;
+    GnssSvStatus sv_gp_status;
+    GnssSvStatus sv_gns_status;
     gps_location_callback  callback;
     char    in[ NMEA_MAX_SIZE+1 ];
+    int update;
 } NmeaReader;
 
 
@@ -230,12 +233,13 @@ void update_gps_status(GpsStatusValue val)
 }
 
 
-void update_gps_svstatus(GpsSvStatus *val)
+void update_gns_svstatus(GnssSvStatus *val)
 {
     GpsState*  state = _gps_state;
     //Should be made thread safe...
-    if (state->callbacks->sv_status_cb)
-        state->callbacks->sv_status_cb(val);
+
+    if (state->callbacks->gnss_sv_status_cb)
+        state->callbacks->gnss_sv_status_cb(val);
 }
 
 
@@ -268,9 +272,9 @@ nmea_reader_init( NmeaReader*  r )
     r->utc_year = -1;
     r->utc_mon  = -1;
     r->utc_day  = -1;
-    r->gsa      = false;
     r->callback = NULL;
     r->fix.size = sizeof(r->fix);
+    r->update = 0;
 
     //nmea_reader_update_utc_diff( r );
 }
@@ -415,19 +419,20 @@ nmea_reader_update_altitude( NmeaReader*  r,
 }
 
 
-static int nmea_reader_update_accuracy(NmeaReader* r, Token accuracy, bool is_fix)
+static int nmea_reader_update_accuracy( NmeaReader*  r,
+                             Token        accuracy )
 {
     Token   tok = accuracy;
 
     if (tok.p >= tok.end)
         return -1;
 
-    r->fix.accuracy = (float) str2float(tok.p, tok.end);
-    if (99.0f < r->fix.accuracy)
-        return 0;
+    r->fix.accuracy = str2float(tok.p, tok.end);
+    if (r->fix.accuracy == 99.99){
+      return 0;
+    }
 
-    if (is_fix)
-        r->fix.flags |= GPS_LOCATION_HAS_ACCURACY;
+    r->fix.flags   |= GPS_LOCATION_HAS_ACCURACY;
     return 0;
 }
 
@@ -465,25 +470,59 @@ nmea_reader_update_speed( NmeaReader*  r,
 
 
 static int
-nmea_reader_update_svs( NmeaReader*  r, int inview, int num, int i, Token prn, Token elevation, Token azimuth, Token snr )
+nmea_reader_update_svs_gl( NmeaReader*  r, int inview, int num, int i, Token prn, Token elevation, Token azimuth, Token snr )
 {
     int o;
+    int sid, svid;
+
     i = (num - 1)*4 + i;
     if (i < inview) {
-        r->sv_status.sv_list[i].prn=str2int(prn.p,prn.end);
-        r->sv_status.sv_list[i].elevation=str2int(elevation.p,elevation.end);
-        r->sv_status.sv_list[i].azimuth=str2int(azimuth.p,azimuth.end);
-        r->sv_status.sv_list[i].snr=str2int(snr.p,snr.end);
+        sid = str2int(prn.p,prn.end);
+
+        svid = sid - 64;
+        r->sv_gl_status.gnss_sv_list[i].constellation = GNSS_CONSTELLATION_GLONASS;
+        r->sv_gl_status.gnss_sv_list[i].svid=svid;
+        r->sv_gl_status.gnss_sv_list[i].elevation=str2int(elevation.p,elevation.end);
+        r->sv_gl_status.gnss_sv_list[i].azimuth=str2int(azimuth.p,azimuth.end);
+        r->sv_gl_status.gnss_sv_list[i].c_n0_dbhz=str2int(snr.p,snr.end);
+        r->sv_gl_status.gnss_sv_list[i].flags = GNSS_SV_FLAGS_NONE;
+
         for (o=0;o<12;o++){
-            if (id_in_fixed[o]==str2int(prn.p,prn.end)){
-                prnid = str2int(prn.p, prn.end);
-                r->sv_status.used_in_fix_mask |= (1ul << (prnid-1));
+            if (id_in_gl_fixed[o]==sid){
+                r->sv_gl_status.gnss_sv_list[i].flags |= GNSS_SV_FLAGS_USED_IN_FIX;
+                break;
+            }
+        }
+
+    }
+    return 0;
+}
+
+static int
+nmea_reader_update_svs_gp( NmeaReader*  r, int inview, int num, int i, Token prn, Token elevation, Token azimuth, Token snr )
+{
+    int o;
+    int sid;
+
+    i = (num - 1)*4 + i;
+    if (i < inview) {
+        sid = str2int(prn.p,prn.end);
+        r->sv_gp_status.gnss_sv_list[i].constellation = GNSS_CONSTELLATION_GPS;
+        r->sv_gp_status.gnss_sv_list[i].svid=sid;
+        r->sv_gp_status.gnss_sv_list[i].elevation=str2int(elevation.p,elevation.end);
+        r->sv_gp_status.gnss_sv_list[i].azimuth=str2int(azimuth.p,azimuth.end);
+        r->sv_gp_status.gnss_sv_list[i].c_n0_dbhz=str2int(snr.p,snr.end);
+        r->sv_gp_status.gnss_sv_list[i].flags = GNSS_SV_FLAGS_NONE;
+
+        for ( o = 0; o < 12; o++) {
+            if (id_in_gp_fixed[o]==sid){
+                r->sv_gp_status.gnss_sv_list[i].flags |= GNSS_SV_FLAGS_USED_IN_FIX;
+                break;
             }
         }
     }
     return 0;
 }
-
 
 static void
 nmea_reader_parse( NmeaReader*  r )
@@ -524,11 +563,8 @@ nmea_reader_parse( NmeaReader*  r )
         D("Sentence id '%.*s' too short, ignored.", (int)(tok.end-tok.p), tok.p);
         return;
     }
-
     // ignore first two characters.
     tok.p += 2;
-
-    bool send_msg = false;
     if ( !memcmp(tok.p, "GGA", 3) ) {
         // GPS fix
         Token  tok_time          = nmea_tokenizer_get(tzer,1);
@@ -536,25 +572,20 @@ nmea_reader_parse( NmeaReader*  r )
         Token  tok_latitudeHemi  = nmea_tokenizer_get(tzer,3);
         Token  tok_longitude     = nmea_tokenizer_get(tzer,4);
         Token  tok_longitudeHemi = nmea_tokenizer_get(tzer,5);
-        Token  tok_fix           = nmea_tokenizer_get(tzer,6);
         Token  tok_accuracy      = nmea_tokenizer_get(tzer,8);
         Token  tok_altitude      = nmea_tokenizer_get(tzer,9);
         Token  tok_altitudeUnits = nmea_tokenizer_get(tzer,10);
 
-        int fix = str2int(tok_fix.p, tok_fix.end);
-        if (0 < fix)
-        {
-            time_t gmt;
-            nmea_reader_update_time(r, tok_time, &gmt);
-            nmea_reader_update_latlong(r, tok_latitude, tok_latitudeHemi.p[0], tok_longitude, tok_longitudeHemi.p[0]);
-            nmea_reader_update_altitude(r, tok_altitude, tok_altitudeUnits);
-        }
+        time_t gmt;
+        nmea_reader_update_time(r, tok_time, &gmt);
+        nmea_reader_update_latlong(r, tok_latitude,
+                                      tok_latitudeHemi.p[0],
+                                      tok_longitude,
+                                      tok_longitudeHemi.p[0]);
+        nmea_reader_update_altitude(r, tok_altitude, tok_altitudeUnits);
 
-        if (!r->gsa)
-        {
-            nmea_reader_update_accuracy(r, tok_accuracy, 0 < fix);
-            send_msg = true;
-        }
+        nmea_reader_update_accuracy(r, tok_accuracy);
+
     } else if ( !memcmp(tok.p, "GSA", 3) ) {
         /*
           1    = Mode:
@@ -569,33 +600,26 @@ nmea_reader_parse( NmeaReader*  r )
           16   = HDOP
           17   = VDOP
         */
-        if (r->gsa)
-        {
-            //Token tok_mode = nmea_tokenizer_get(tzer,1);
-            Token tok_fix = nmea_tokenizer_get(tzer,2);
-            //Token tok_id   = nmea_tokenizer_get(tzer,3);
-            //Token tok_pdop = nmea_tokenizer_get(tzer,15);
-            Token tok_hdop = nmea_tokenizer_get(tzer,16);
-            //Token tok_vdop = nmea_tokenizer_get(tzer,17);
+        Token tok_id  = nmea_tokenizer_get(tzer,3);
+        Token tok_hdop = nmea_tokenizer_get(tzer,16);
 
-            int fix = str2int(tok_fix.p, tok_fix.end);
-            if (fix == 2)
-                r->fix.flags &= ~GPS_LOCATION_HAS_ALTITUDE;
+        nmea_reader_update_accuracy(r, tok_hdop);
 
-            nmea_reader_update_accuracy(r, tok_hdop, 1 < fix);
-            send_msg = true;
+        int sid;
+        sid = str2int(tok_id.p,tok_id.end);
 
-            int i;
-            for (i = 0; i < 12; i++) {
-                Token tok_id = nmea_tokenizer_get(tzer, 3 + i);
-                if (tok_id.end > tok_id.p) {
-                    id_in_fixed[i] = str2int(tok_id.p, tok_id.end);
-                    D("Satellite used '%.*s'", tok_id.end - tok_id.p, tok_id.p);
+        int i;
+        for ( i=0; i<12; i++ ) {
+            Token tok_id  = nmea_tokenizer_get(tzer,3+i);
+            if ( tok_id.end > tok_id.p ){
+                if (sid > 64) {
+                    id_in_gl_fixed[i] = str2int(tok_id.p,tok_id.end);
+                } else {
+                    id_in_gp_fixed[i] = str2int(tok_id.p,tok_id.end);
                 }
+                D("Satellite used '%.*s'", (int)(tok_id.end-tok_id.p), tok_id.p);
             }
         }
-
-        r->gsa = true;
     } else if ( !memcmp(tok.p, "GSV", 3) ) {
         /*
         1    = Total number of messages of this type in this cycle
@@ -634,19 +658,75 @@ nmea_reader_parse( NmeaReader*  r )
         int msg_number = str2int(tok_msg_number.p,tok_msg_number.end);
         int svs_inview = str2int(tok_svs_inview.p,tok_svs_inview.end);
         D("GSV %d %d %d", num_messages, msg_number, svs_inview );
-        if (msg_number==1){
-            r->sv_status.used_in_fix_mask = 0ul;
+
+        int sid = str2int(tok_sv1_prn_num.p,tok_sv1_prn_num.end);
+
+        if (sid > 64) {
+            nmea_reader_update_svs_gl( r, svs_inview, msg_number, 0, tok_sv1_prn_num, tok_sv1_elevation, tok_sv1_azimuth, tok_sv1_snr );
+            nmea_reader_update_svs_gl( r, svs_inview, msg_number, 1, tok_sv2_prn_num, tok_sv2_elevation, tok_sv2_azimuth, tok_sv2_snr );
+            nmea_reader_update_svs_gl( r, svs_inview, msg_number, 2, tok_sv3_prn_num, tok_sv3_elevation, tok_sv3_azimuth, tok_sv3_snr );
+            nmea_reader_update_svs_gl( r, svs_inview, msg_number, 3, tok_sv4_prn_num, tok_sv4_elevation, tok_sv4_azimuth, tok_sv4_snr );
+
+            r->sv_gl_status.num_svs=svs_inview;
+            r->sv_gl_status.size = sizeof(r->sv_gl_status);
+
+        } else {
+            nmea_reader_update_svs_gp( r, svs_inview, msg_number, 0, tok_sv1_prn_num, tok_sv1_elevation, tok_sv1_azimuth, tok_sv1_snr );
+            nmea_reader_update_svs_gp( r, svs_inview, msg_number, 1, tok_sv2_prn_num, tok_sv2_elevation, tok_sv2_azimuth, tok_sv2_snr );
+            nmea_reader_update_svs_gp( r, svs_inview, msg_number, 2, tok_sv3_prn_num, tok_sv3_elevation, tok_sv3_azimuth, tok_sv3_snr );
+            nmea_reader_update_svs_gp( r, svs_inview, msg_number, 3, tok_sv4_prn_num, tok_sv4_elevation, tok_sv4_azimuth, tok_sv4_snr );
+
+            r->sv_gp_status.num_svs=svs_inview;
+            r->sv_gp_status.size = sizeof(r->sv_gp_status);
+
         }
 
-        nmea_reader_update_svs( r, svs_inview, msg_number, 0, tok_sv1_prn_num, tok_sv1_elevation, tok_sv1_azimuth, tok_sv1_snr );
-        nmea_reader_update_svs( r, svs_inview, msg_number, 1, tok_sv2_prn_num, tok_sv2_elevation, tok_sv2_azimuth, tok_sv2_snr );
-        nmea_reader_update_svs( r, svs_inview, msg_number, 2, tok_sv3_prn_num, tok_sv3_elevation, tok_sv3_azimuth, tok_sv3_snr );
-        nmea_reader_update_svs( r, svs_inview, msg_number, 3, tok_sv4_prn_num, tok_sv4_elevation, tok_sv4_azimuth, tok_sv4_snr );
-        r->sv_status.num_svs=svs_inview;
 
-        if (num_messages==msg_number)
-            update_gps_svstatus(&r->sv_status);
+        if (num_messages==msg_number){
+            int k = 0;
 
+            for (int i = 0; i < GNSS_MAX_SVS; i++)
+            {
+                if (r->sv_gp_status.gnss_sv_list[i].svid > 0)
+                {
+                    r->sv_gns_status.gnss_sv_list[k] = r->sv_gp_status.gnss_sv_list[i];
+                    k++;
+                }
+            }
+            for (int i = 0; i < GNSS_MAX_SVS; i++)
+            {
+                if (r->sv_gl_status.gnss_sv_list[i].svid > 0)
+                {
+                    r->sv_gns_status.gnss_sv_list[k] = r->sv_gl_status.gnss_sv_list[i];
+                    k++;
+                }
+            }
+
+            r->sv_gns_status.num_svs = k;
+            r->sv_gns_status.size = sizeof(r->sv_gns_status);
+
+            update_gns_svstatus(&r->sv_gns_status);
+        }
+    } else if (!memcmp(tok.p, "GLL", 3)) {
+        Token tok_fixStatus = nmea_tokenizer_get(tzer, 6);
+
+        if (tok_fixStatus.p[0] == 'A') {
+            Token tok_fixStatus = nmea_tokenizer_get(tzer, 6);
+            Token tok_latitude = nmea_tokenizer_get(tzer, 1);
+            Token tok_latitudeHemi = nmea_tokenizer_get(tzer, 2);
+            Token tok_longitude = nmea_tokenizer_get(tzer, 3);
+            Token tok_longitudeHemi = nmea_tokenizer_get(tzer, 4);
+
+            D("in GGL, fixStatus=%c", tok_fixStatus.p[0]);
+            if (tok_fixStatus.p[0] == 'A') {
+                nmea_reader_update_latlong(r, tok_latitude,
+                                           tok_latitudeHemi.p[0],
+                                           tok_longitude,
+                                           tok_longitudeHemi.p[0]);
+
+                r->update = 1;
+            }
+        }
     } else if ( !memcmp(tok.p, "RMC", 3) ) {
         Token  tok_time          = nmea_tokenizer_get(tzer,1);
         Token  tok_fixStatus     = nmea_tokenizer_get(tzer,2);
@@ -669,6 +749,7 @@ nmea_reader_parse( NmeaReader*  r )
 
             nmea_reader_update_bearing( r, tok_bearing );
             nmea_reader_update_speed  ( r, tok_speed );
+            r->update = 1;
         }
     } else if ( !memcmp(tok.p, "VTG", 3) ) {
         Token  tok_fixStatus     = nmea_tokenizer_get(tzer,9);
@@ -714,15 +795,12 @@ nmea_reader_parse( NmeaReader*  r )
         D("%s\n", temp);
     }
 #endif
-    if (send_msg)
-    {
-        if (_gps_state->callbacks->location_cb)
-        {
-            _gps_state->callbacks->location_cb(&r->fix);
+    if (r->fix.flags & GPS_LOCATION_HAS_ACCURACY && r->update) {
+        if (_gps_state->callbacks->location_cb) {
+            _gps_state->callbacks->location_cb( &r->fix );
             r->fix.flags = 0;
-        }
-        else
-        {
+            r->update = 0;
+        } else {
             D("No callback, keeping data until needed !");
         }
     }
