@@ -348,7 +348,10 @@ nmea_reader_update_date( NmeaReader*  r, Token  date_tok, Token  time_tok )
         {
             D("System time synchronized with the GPS");
             struct timeval tv = { gmt, 0 };
-            settimeofday(&tv, NULL);
+            int ret = settimeofday(&tv, NULL);
+            if (ret != 0) {
+                D("Failed to set system time: %d", ret);
+            }
         }
     }
 
